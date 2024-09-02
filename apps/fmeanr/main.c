@@ -81,23 +81,22 @@ void vector_fmeanr(int img_height, int img_width, int r, float input[img_height]
   asm volatile("vsetvli zero, %0, e32, m2, ta, ma" :: "r" (2*r+1));
   for(int y=r;y<img_height-r;y++){
     for(int x=r;x<img_width-r;x++){
-      float* start_of_vector = &input[y-r][x-r];
-      asm volatile("vle32.v v1,(%0);" :: "r"(start_of_vector));
+      asm volatile("vle32.v v0,(%0);" :: "r"(&input[y-r][x-r]));
       for(int j = -r+1; j <= r; j++){
-        // asm volatile("vle32.v v2,(%0)" :: "r"(&input[y+j][x-r]));
-        // asm volatile("vfadd.vv v1,v2,v1");
+        asm volatile("vle32.v v4,(%0)" :: "r"(&input[y+j][x-r]));
+        asm volatile("vfadd.vv v0,v4,v0");
 
         // for(int i = x-r < 0 ? -x : -r; i <= r && i + x < img_width; i++){
         //     sum += input[y+j][x+i];
         //     count++;
         // }
       }
-      // asm volatile("vfredosum.vs v3,v1,v0");
-      // asm volatile("vfmv.f.s fa5,v3");
-      // asm volatile("li x5,0x42440000"); //is 49 which is 7*7 which is size of a window when radius=3
-      // asm volatile("fmv.w.x fa4,x5");
-      // asm volatile("fdiv.s fa5,fa5,fa4");
-      // asm volatile("fsw fa5,0(%0)":: "r"(&output[y][x]));
+      asm volatile("vfredosum.vs v0,v0,v8");
+      asm volatile("vfmv.f.s fa5,v0");
+      asm volatile("li x5,0x42440000"); //is 49 which is 7*7 which is size of a window when radius=3
+      asm volatile("fmv.w.x fa4,x5");
+      asm volatile("fdiv.s fa5,fa5,fa4");
+      asm volatile("fsw fa5,0(%0)":: "r"(&output[y][x]));
     }
   }
 }
@@ -124,11 +123,17 @@ int main() {
 
   //performance
   int64_t runtime = get_timer();
-  printf("The execution took %ld cycles.\n", runtime);
+  printf("The vector execution took %ld cycles.\n", runtime);
 
   //verification
   float verification_output[img_height][img_width];
+  start_timer();
   fmeanr(img_height, img_width, r, input, verification_output);
+  stop_timer();
+
+  runtime = get_timer();
+  printf("The scalar execution took %ld cycles.\n", runtime);
+
   if (verify_output(img_height, img_width, output, verification_output)){
     printf("Passed.\n");
   } else {
