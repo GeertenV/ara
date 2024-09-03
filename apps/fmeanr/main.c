@@ -62,14 +62,15 @@ int verify_output(int img_height, int img_width, float output[img_height][img_wi
 }
 
 void fmeanr(int img_height, int img_width, int r, float input[img_height][img_width], float output[img_height][img_width]) {
-    for(int y=0;y<img_height;y++){
-        for(int x=0;x<img_width;x++){
+    int count = 169;
+    for(int y=r;y<img_height-r;y++){
+        for(int x=r;x<img_width-r;x++){
             float sum = 0.0;
-            int count = 0;
+            //int count = 0;
             for(int j = y-r < 0 ? -y : -r; j <= r && j + y < img_height; j++){
                 for(int i = x-r < 0 ? -x : -r; i <= r && i + x < img_width; i++){
                     sum += input[y+j][x+i];
-                    count++;
+                    //count++;
                 }
             }
             output[y][x] = sum/count;
@@ -79,22 +80,17 @@ void fmeanr(int img_height, int img_width, int r, float input[img_height][img_wi
 
 void vector_fmeanr(int img_height, int img_width, int r, float input[img_height][img_width], float output[img_height][img_width]) {
   asm volatile("vsetvli zero, %0, e32, m2, ta, ma" :: "r" (2*r+1));
+  asm volatile("li a3,169"); //is 49 which is 7*7 which is size of a window when radius=3
+  asm volatile("fcvt.s.w fa4,a3");
   for(int y=r;y<img_height-r;y++){
     for(int x=r;x<img_width-r;x++){
       asm volatile("vle32.v v0,(%0);" :: "r"(&input[y-r][x-r]));
       for(int j = -r+1; j <= r; j++){
         asm volatile("vle32.v v4,(%0)" :: "r"(&input[y+j][x-r]));
         asm volatile("vfadd.vv v0,v4,v0");
-
-        // for(int i = x-r < 0 ? -x : -r; i <= r && i + x < img_width; i++){
-        //     sum += input[y+j][x+i];
-        //     count++;
-        // }
       }
       asm volatile("vfredosum.vs v0,v0,v8");
       asm volatile("vfmv.f.s fa5,v0");
-      asm volatile("li x5,0x42440000"); //is 49 which is 7*7 which is size of a window when radius=3
-      asm volatile("fmv.w.x fa4,x5");
       asm volatile("fdiv.s fa5,fa5,fa4");
       asm volatile("fsw fa5,0(%0)":: "r"(&output[y][x]));
     }
@@ -109,9 +105,9 @@ int main() {
   printf("\n");
   printf("\n");
 
-  int img_height = 22;
-  int img_width = 22;
-  int r = 3;
+  int img_height = 50;
+  int img_width = 50;
+  int r = 6;
   float input[img_height][img_width];
   float output[img_height][img_width];
   //generate input
