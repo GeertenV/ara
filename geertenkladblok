@@ -1,0 +1,12 @@
+sudo apt install libelf-dev
+sudo apt install help2man
+make toolchain-gcc
+
+cd apps
+make bin/fmeanr
+
+cd hardware
+make verilate
+make verilate trace=1
+app=fmeanr make simv
+app=fmeanr make simv trace=1
