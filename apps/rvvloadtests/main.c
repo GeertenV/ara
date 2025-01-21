@@ -6,21 +6,10 @@ int main() {
 
 
     asm volatile("vsetvli zero, %0, e32, m2, ta, ma" :: "r" (32));
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
-    asm volatile("NOP");
+    // changed NOP's to a single FENCE for 21jan experiments
+    asm volatile("FENCE");
+    // asm volatile("NOP");
+
     asm volatile("vle32.v v0,(%0);" :: "r"(&input[1][0]));
+    // asm volatile("vle32.v v0,(a0)");
 }

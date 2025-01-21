@@ -49,33 +49,33 @@ void print_image(int img_height, int img_width, float input[img_height][img_widt
 
 
 void test_function(int img_height, int img_width, float input[img_height][img_width], float output[img_height][img_width]) {
-    asm volatile("vsetvli zero, %0, e32, m2, ta, ma" :: "r" (31));
+    asm volatile("vsetvli zero, %0, e32, m2, ta, ma" :: "r" (9));
     printf("A\n");
     printf("B\n");
     asm volatile("vle32.v v0,(%0);" :: "r"(&input[1][0]));
 
-    test 20 tm 23
-    asm volatile("vsetvli zero, %0, e32, m2, ta, ma" :: "r" (32));
-    printf("A\n");
-    printf("B\n");
-    asm volatile("vle32.v v0,(%0);" :: "r"(&input[1][0]));
-    asm volatile("vle32.v v4,(%0);" :: "r"(&input[2][0]));
-    asm volatile("vfadd.vv v2,v4,v0");
-    asm volatile("vfadd.vv v2,v2,v2");
-    printf("A\n");
-    printf("B\n");
-    printf("A\n");
-    printf("B\n");
-    asm volatile("vle32.v v0,(%0);" :: "r"(&input[1][0]));
-    asm volatile("vle32.v v4,(%0);" :: "r"(&input[2][0]));
-    asm volatile("vfadd.vv v2,v2,v2");
-    asm volatile("vfadd.vv v2,v2,v2");
-    printf("A\n");
-    printf("B\n");
-    printf("A\n");
-    printf("B\n");
-    asm volatile("vfadd.vv v2,v2,v2");
-    asm volatile("vfadd.vv v4,v4,v4");
+    // test 20 tm 23
+    // asm volatile("vsetvli zero, %0, e32, m2, ta, ma" :: "r" (32));
+    // printf("A\n");
+    // printf("B\n");
+    // asm volatile("vle32.v v0,(%0);" :: "r"(&input[1][0]));
+    // asm volatile("vle32.v v4,(%0);" :: "r"(&input[2][0]));
+    // asm volatile("vfadd.vv v2,v4,v0");
+    // asm volatile("vfadd.vv v2,v2,v2");
+    // printf("A\n");
+    // printf("B\n");
+    // printf("A\n");
+    // printf("B\n");
+    // asm volatile("vle32.v v0,(%0);" :: "r"(&input[1][0]));
+    // asm volatile("vle32.v v4,(%0);" :: "r"(&input[2][0]));
+    // asm volatile("vfadd.vv v2,v2,v2");
+    // asm volatile("vfadd.vv v2,v2,v2");
+    // printf("A\n");
+    // printf("B\n");
+    // printf("A\n");
+    // printf("B\n");
+    // asm volatile("vfadd.vv v2,v2,v2");
+    // asm volatile("vfadd.vv v4,v4,v4");
 
   // for(int i=8;i<129;i++){
   //   asm volatile("vsetvli zero, %0, e32, m2, ta, ma" :: "r" (i));
