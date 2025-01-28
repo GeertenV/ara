@@ -41,14 +41,38 @@ int main() {
     // asm volatile("vfadd.vv v0,v2,v0");
 
     // triple reg test
+    // asm volatile("vle32.v v2,(%0);" :: "r"(&input[1][0]));
+    // asm volatile("vfadd.vv v0,v2,v0");
+    // asm volatile("vle32.v v4,(%0);" :: "r"(&input[2][0]));
+    // asm volatile("vfadd.vv v0,v4,v0");
+    // asm volatile("vle32.v v6,(%0);" :: "r"(&input[3][0]));
+    // asm volatile("vfadd.vv v0,v6,v0");
+    // asm volatile("vle32.v v2,(%0);" :: "r"(&input[4][0]));
+    // asm volatile("vfadd.vv v0,v2,v0");
+    // asm volatile("vle32.v v4,(%0);" :: "r"(&input[5][0]));
+    // asm volatile("vfadd.vv v0,v4,v0");
+
+    // quad reg test
+    // asm volatile("vle32.v v2,(%0);" :: "r"(&input[1][0]));
+    // asm volatile("vfadd.vv v0,v2,v0");
+    // asm volatile("vle32.v v4,(%0);" :: "r"(&input[2][0]));
+    // asm volatile("vfadd.vv v0,v4,v0");
+    // asm volatile("vle32.v v6,(%0);" :: "r"(&input[3][0]));
+    // asm volatile("vfadd.vv v0,v6,v0");
+    // asm volatile("vle32.v v8,(%0);" :: "r"(&input[4][0]));
+    // asm volatile("vfadd.vv v0,v8,v0");
+    // asm volatile("vle32.v v2,(%0);" :: "r"(&input[5][0]));
+    // asm volatile("vfadd.vv v0,v2,v0");
+
+    // penta reg test
     asm volatile("vle32.v v2,(%0);" :: "r"(&input[1][0]));
     asm volatile("vfadd.vv v0,v2,v0");
     asm volatile("vle32.v v4,(%0);" :: "r"(&input[2][0]));
     asm volatile("vfadd.vv v0,v4,v0");
     asm volatile("vle32.v v6,(%0);" :: "r"(&input[3][0]));
     asm volatile("vfadd.vv v0,v6,v0");
-    asm volatile("vle32.v v2,(%0);" :: "r"(&input[4][0]));
-    asm volatile("vfadd.vv v0,v2,v0");
-    asm volatile("vle32.v v4,(%0);" :: "r"(&input[5][0]));
-    asm volatile("vfadd.vv v0,v4,v0");
+    asm volatile("vle32.v v8,(%0);" :: "r"(&input[4][0]));
+    asm volatile("vfadd.vv v0,v8,v0");
+    asm volatile("vle32.v v10,(%0);" :: "r"(&input[5][0]));
+    asm volatile("vfadd.vv v0,v10,v0");
 }
