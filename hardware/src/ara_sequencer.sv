@@ -47,8 +47,13 @@ module ara_sequencer import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
     // Interface with the Address Generation
     input  logic                            addrgen_ack_i,
     input  ariane_pkg::exception_t          addrgen_exception_i,
-    input  vlen_t                           addrgen_exception_vstart_i
+    input  vlen_t                           addrgen_exception_vstart_i,
+    input  logic                            addrgen_fof_exception_i,
+    // Interface with the store unit
+    input  logic                            lsu_current_burst_exception_i
   );
+
+  `include "common_cells/registers.svh"
 
   ///////////////////////////////////
   //  Running vector instructions  //
@@ -231,11 +236,11 @@ module ara_sequencer import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
   vreg_access_t [31:0] write_list_d, write_list_q;
 
   // This function determines the VFU responsible for handling this operation.
-  function automatic vfu_e vfu(ara_op_e op = VADD);
+  function automatic vfu_e vfu(ara_op_e op`ifndef SYNTHESIS = VADD `endif);
     unique case (op) inside
       [VADD:VWREDSUM]      : vfu = VFU_Alu;
       [VMUL:VFWREDOSUM]    : vfu = VFU_MFpu;
-      [VMFEQ:VMXNOR]       : vfu = VFU_MaskUnit;
+      [VMFEQ:VCOMPRESS]    : vfu = VFU_MaskUnit;
       [VLE:VLXE]           : vfu = VFU_LoadUnit;
       [VSE:VSXE]           : vfu = VFU_StoreUnit;
       [VSLIDEUP:VSLIDEDOWN]: vfu = VFU_SlideUnit;
@@ -265,6 +270,9 @@ module ara_sequencer import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
       [VMSEQ:VMXNOR]:
         for (int i = 0; i < NrVFUs; i++)
           if (i == VFU_Alu || i == VFU_MaskUnit) target_vfus[i] = 1'b1;
+      [VRGATHER:VCOMPRESS]:
+        for (int i = 0; i < NrVFUs; i++)
+          if (i == VFU_Alu || i == VFU_MaskUnit) target_vfus[i] = 1'b1;
       [VMFEQ:VMFGE]:
         for (int i = 0; i < NrVFUs; i++)
           if (i == VFU_MFpu || i == VFU_MaskUnit) target_vfus[i] = 1'b1;
@@ -282,6 +290,11 @@ module ara_sequencer import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
           if (i == VFU_None) target_vfus[i] = 1'b1;
     endcase
   endfunction : target_vfus
+
+  // Determine if the request does not need source operands from the VRF
+  function automatic logic no_src_vrf(pe_req_t pe_req);
+    no_src_vrf = ((pe_req.op == VLE || pe_req.op == VLSE) && pe_req.vm);
+  endfunction
 
   localparam int unsigned InsnQueueDepth [NrVFUs] = '{
     ValuInsnQueueDepth,
@@ -325,6 +338,9 @@ module ara_sequencer import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
   // Since the scalar move uses the MaskB opqueue, we need to wait to finish
   // the MASKU insn to be sure that the forwarded value is the scalar one
   logic running_mask_insn_d, running_mask_insn_q;
+
+  logic lsu_current_burst_exception_q;
+  `FF(lsu_current_burst_exception_q, lsu_current_burst_exception_i, 1'b0, clk_i, rst_ni);
 
   // pe_req_ready_i comes from all the lanes
   // It is deasserted if the current request is stuck
@@ -370,10 +386,15 @@ module ara_sequencer import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
       IDLE: begin
         // Sent a request, but the operand requesters are not ready
         // Do not trap here the instructions that do not need any operands at all
-        if (pe_req_valid_o && !(&operand_requester_ready || (is_load(pe_req_o.op) && pe_req_o.vm))) begin
+        if (pe_req_valid_o && !(&operand_requester_ready || no_src_vrf(pe_req_o))) begin
           // Maintain output
           pe_req_d               = pe_req_o;
           pe_req_valid_d         = pe_req_valid_o;
+
+          // If we are here after a faulty lsu op with VRF sources,
+          // wait until the lsu signals the exception on the current burst before aborting the request.
+          if (lsu_current_burst_exception_q)
+            pe_req_valid_d = 1'b0;
 
           // We are not ready
           ara_req_ready_o = 1'b0;
@@ -514,9 +535,20 @@ module ara_sequencer import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
         pe_req_d       = pe_req_o;
         pe_req_valid_d = pe_req_valid_o;
 
-        // Consume the request if acknowledged during a scalar move
-        if (pe_req_valid_o && &operand_requester_ready)
+        // Stop requesting if the operations have been completely acknowledged:
+        // 1) Scalar moves / vcpop / vfirst only need ack from the lanes
+        if (!ara_req_i.use_vd && !is_store(ara_req_i.op) && &operand_requester_ready)
           pe_req_valid_d = 1'b0;
+        // 2) Unmasked non-indexed loads only need ack from the addrgen
+        if (no_src_vrf(pe_req_o) && addrgen_ack_i)
+          pe_req_valid_d = 1'b0;
+        // 3) In case of an exception on this burst, kill the request.
+        //    Exceptions on this burst mean that all the valid sources have been fetched from VRF already.
+        //    Don't immediately kill when detecting the exception in the addrgen, as previous valid bursts
+        //    can still need operands to be fetched from the VRF.
+        if (lsu_current_burst_exception_q)
+          pe_req_valid_d = 1'b0;
+        // 4) In the other cases, we need an ack from both addrgen and lanes, so keep up the req
 
         // Wait for the address translation
         if ((is_load(pe_req_d.op) || is_store(pe_req_d.op)) && addrgen_ack_i) begin
@@ -525,6 +557,7 @@ module ara_sequencer import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
           ara_resp_valid_o    = 1'b1;
           ara_resp_o.exception = addrgen_exception_i;
           ara_resp_o.exception_vstart = addrgen_exception_vstart_i;
+          ara_resp_o.fof_exception = addrgen_fof_exception_i;
         end
 
         // Wait for the scalar result
@@ -532,8 +565,8 @@ module ara_sequencer import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
           // Acknowledge the request
           state_d                = IDLE;
           ara_req_ready_o        = 1'b1;
-          ara_resp_o.resp        = pe_scalar_resp_i;
           ara_resp_valid_o       = 1'b1;
+          ara_resp_o.resp        = pe_scalar_resp_i;
           pe_scalar_resp_ready_o = pe_scalar_resp_valid_i & ~running_mask_insn_q;
         end
       end

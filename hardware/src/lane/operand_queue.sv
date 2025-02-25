@@ -14,6 +14,7 @@ module operand_queue import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
     parameter  int           unsigned NrSlaves            = 1,
     parameter  int           unsigned NrLanes             = 0,
     parameter  int           unsigned VLEN                = 0,
+    parameter  bit                    AccessCmdPop        = 0,
     // Support for floating-point data types
     parameter  fpu_support_e          FPUSupport          = FPUSupportHalfSingleDouble,
     // Supported conversions
@@ -37,6 +38,8 @@ module operand_queue import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
     // Interface with the Operand Requester
     input  operand_queue_cmd_t                operand_queue_cmd_i,
     input  logic                              operand_queue_cmd_valid_i,
+    // Interface with the Lane Sequencer
+    output logic                              cmd_pop_o,
     // Interface with the Vector Register File
     input  elen_t                             operand_i,
     input  logic                              operand_valid_i,
@@ -72,6 +75,13 @@ module operand_queue import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
     .pop_i     (cmd_pop                  ),
     .usage_o   (/* Unused */             )
   );
+
+  // If this is the MaskB opqueue, propagate the
+  // pop information for the cmd buffer
+  if (AccessCmdPop)
+    assign cmd_pop_o = cmd_pop;
+  else
+    assign cmd_pop_o = 1'b0;
 
   //////////////
   //  Buffer  //
@@ -155,6 +165,65 @@ module operand_queue import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
   // Helper to fill with neutral values the last packet
   logic incomplete_packet, last_packet;
 
+  ////////////////////////////////
+  //  Floating-point conversion //
+  ////////////////////////////////
+
+  logic [$clog2(fp_mantissa_bits(EW8, 0))-1:0]  fp8_m_lzc[4];  // 2 bits each
+  logic [$clog2(fp_mantissa_bits(EW16, 0))-1:0] fp16_m_lzc[2]; // 4 bits each
+  logic [$clog2(fp_mantissa_bits(EW32, 0))-1:0] fp32_m_lzc;    // 5 bits each
+
+  fp8_t  fp8[4];
+  fp16_t fp16[2];
+  fp32_t fp32;
+
+  // To convert subnormal numbers to normalized form in floating-point numbers,
+  // it is necessary to determine the number of leading zeros in the mantissa.
+  // This is typically accomplished using a lzc (leading zero count) module,
+  // which can accurately count the number of leading zeros in a given number.
+  // By knowing the number of leading zeros in the mantissa, we can properly
+  // adjust the exponent and shift the binary point to achieve a normalized
+  // representation of the number.
+  if ({RVVB(FPUSupport), RVVH(FPUSupport)} == 2'b11) begin
+    // sew: 8-bit
+    for (genvar i = 0; i < 4; i++) begin
+      lzc #(
+        .WIDTH(fp_mantissa_bits(EW8, 0)),
+        .MODE (1)
+      ) leading_zero_e8_i (
+        .in_i   (fp8[i].m    ),
+        .cnt_o  (fp8_m_lzc[i]),
+        .empty_o(/*Unused*/   )
+      );
+    end
+  end
+
+  if ({RVVH(FPUSupport), RVVF(FPUSupport)} == 2'b11) begin
+    // sew: 16-bit
+    for (genvar i = 0; i < 2; i++) begin
+      lzc #(
+        .WIDTH(fp_mantissa_bits(EW16, 0)),
+        .MODE (1)
+      ) leading_zero_e16_i (
+        .in_i   (fp16[i].m    ),
+        .cnt_o  (fp16_m_lzc[i]),
+        .empty_o(/*Unused*/   )
+      );
+    end
+  end
+
+  if ({RVVF(FPUSupport), RVVD(FPUSupport)} == 2'b11) begin
+    // sew: 32-bit
+    lzc #(
+       .WIDTH(fp_mantissa_bits(EW32, 0)),
+       .MODE (1)
+     ) leading_zero_e32 (
+       .in_i   (fp32.m    ),
+       .cnt_o  (fp32_m_lzc),
+       .empty_o(/*Unused*/)
+     );
+  end
+
   always_comb begin: type_conversion
     // Shuffle the input operand
     automatic logic [idx_width(StrbWidth)-1:0] select = deshuffle_index(select_q, 1, cmd.eew);
@@ -164,6 +233,10 @@ module operand_queue import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
     // Default: packet complete
     incomplete_packet = 1'b0;
     last_packet       = 1'b0;
+
+    for (int i = 0; i < 4; i++) fp8[i]  = '0;
+    for (int i = 0; i < 2; i++) fp16[i] = '0;
+    fp32 = '0;
 
     // Reductions need to mask away the inactive elements
     // A temporary solution is to send a neutral value directly
@@ -203,6 +276,13 @@ module operand_queue import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
           end
           MFPU_ADDRGEN: begin
             unique case (cmd.eew)
+              EW8: if (RVVB(FPUSupport) || RVVBA(FPUSupport)) begin
+                unique case (cmd.ntr_red)
+                  2'b01: ntr.w64 = {8{16'h78}};
+                  2'b10: ntr.w64 = {8{16'hf8}};
+                  default:;
+                endcase
+              end
               EW16: begin
                 unique case (cmd.ntr_red)
                   2'b01: ntr.w64 = {4{16'h7c00}};
@@ -331,31 +411,31 @@ module operand_queue import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
         end
       end
 
-      // Floating-Point re-encoding
+      // Floating-Point re-encoding (not supported for alt-16 and alt-8)
       OpQueueConversionWideFP2: begin
         if (FPUSupport != FPUSupportNone) begin
-          unique casez ({cmd.eew, RVVH(FPUSupport), RVVF(FPUSupport), RVVD(FPUSupport)})
-            {EW16, 1'b1, 1'b1, 1'b?}: begin
-              for (int e = 0; e < 2; e++) begin
-                automatic fp16_t fp16 = ibuf_operand[8*select + 32*e +: 16];
-                automatic fp32_t fp32;
-
-                fp32.s = fp16.s;
-                fp32.e = (fp16.e - 15) + 127;
-                fp32.m = {fp16.m, 13'b0};
-
-                conv_operand[32*e +: 32] = fp32;
+          unique casez ({cmd.eew, RVVBA(FPUSupport), RVVB(FPUSupport),
+                                  RVVHA(FPUSupport), RVVH(FPUSupport),
+                                  RVVF(FPUSupport),  RVVD(FPUSupport)})
+            {EW8, 1'b?, 1'b1, 1'b?, 1'b1, 1'b?, 1'b?}: begin
+              for (int e = 0; e < 1; e++) begin
+                automatic fp8_t fp8 = ibuf_operand[8*select + 16*e +: 8];
+                automatic fp16_t fp16;
+                fp16.s = fp8.s;
+                fp16.e = (fp8.e - 7) + 15;
+                fp16.m = {fp8.m, 7'b0};
+                conv_operand[16*e +: 16] = fp16;
               end
             end
-            {EW32, 1'b?, 1'b1, 1'b1}: begin
-              automatic fp32_t fp32 = ibuf_operand[8*select +: 32];
-              automatic fp64_t fp64;
-
-              fp64.s = fp32.s;
-              fp64.e = (fp32.e - 127) + 1023;
-              fp64.m = {fp32.m, 29'b0};
-
-              conv_operand = fp64;
+            {EW16, 1'b?, 1'b?, 1'b?, 1'b1, 1'b1, 1'b?}: begin
+              for (int e = 0; e < 2; e++) begin
+                fp16[e] = ibuf_operand[8*select + 32*e +: 16];
+                conv_operand[32*e +: 32] = fp32_from_fp16(fp16[e], fp16_m_lzc[e]);
+              end
+            end
+            {EW32, 1'b?, 1'b?, 1'b?, 1'b?, 1'b1, 1'b1}: begin
+              fp32 = ibuf_operand[8*select +: 32];
+              conv_operand = fp64_from_fp32(fp32, fp32_m_lzc);
             end
             default:;
           endcase
@@ -365,6 +445,7 @@ module operand_queue import ara_pkg::*; import rvv_pkg::*; import cf_math_pkg::i
       // Zero extension + Reordering for FP conversions
       OpQueueAdjustFPCvt: begin
         unique case (cmd.eew)
+          EW8:  if (RVVB(FPUSupport) || RVVBA(FPUSupport)) conv_operand = {32'b0, ibuf_operand[16 + 8*select +: 8], ibuf_operand[16 + 8*select +: 8], ibuf_operand[32 + 8*select +: 8], ibuf_operand[8*select +: 8]};
           EW16: conv_operand = {32'b0, ibuf_operand[32 + 8*select +: 16], ibuf_operand[8*select +: 16]};
           EW32: conv_operand = {32'b0, ibuf_operand[8*select +: 32]};
           default:;

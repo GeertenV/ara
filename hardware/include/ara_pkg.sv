@@ -32,6 +32,12 @@ package ara_pkg;
     FixedPointEnable  = 1'b1
   } fixpt_support_e;
 
+  // Support for segment memory operations
+  typedef enum logic {
+    SegSupportDisable = 1'b0,
+    SegSupportEnable  = 1'b1
+  } seg_support_e;
+
   // FP support outside of the FPU (external)
   // vfrec7, vfrsqrt7, round-toward-odd
   typedef enum logic {
@@ -39,28 +45,39 @@ package ara_pkg;
     FPExtSupportEnable  = 1'b1
   } fpext_support_e;
 
-  // The three bits correspond to {RVVD, RVVF, RVVH}
-  typedef enum logic [2:0] {
-    FPUSupportNone             = 3'b000,
-    FPUSupportHalf             = 3'b001,
-    FPUSupportSingle           = 3'b010,
-    FPUSupportHalfSingle       = 3'b011,
-    FPUSupportDouble           = 3'b100,
-    FPUSupportSingleDouble     = 3'b110,
-    FPUSupportHalfSingleDouble = 3'b111
+  // The six bits correspond to {RVVD, RVVF, RVVH, RVVHA, RVVB, RVVBA}
+  typedef enum logic [5:0] {
+    FPUSupportNone             = 6'b000000,
+    FPUSupportHalf             = 6'b001000,
+    FPUSupportSingle           = 6'b010000,
+    FPUSupportHalfSingle       = 6'b011000,
+    FPUSupportDouble           = 6'b100000,
+    FPUSupportSingleDouble     = 6'b110000,
+    FPUSupportHalfSingleDouble = 6'b111000,
+    FPUSupportAll              = 6'b111111
   } fpu_support_e;
 
   function automatic logic RVVD(fpu_support_e e);
-    return e[2];
+    return e[5];
   endfunction : RVVD
 
   function automatic logic RVVF(fpu_support_e e);
-    return e[1];
+    return e[4];
   endfunction : RVVF
 
   function automatic logic RVVH(fpu_support_e e);
-    return e[0];
+    return e[3];
   endfunction : RVVH
+
+  function automatic logic RVVHA(fpu_support_e e);
+    return e[2];
+  endfunction : RVVHA
+  function automatic logic RVVB(fpu_support_e e);
+    return e[1];
+  endfunction : RVVB
+  function automatic logic RVVBA(fpu_support_e e);
+    return e[0];
+  endfunction : RVVBA
 
   // Multiplier latencies.
   localparam int unsigned LatMultiplierEW64 = 1;
@@ -134,11 +151,19 @@ package ara_pkg;
     // Floating-point comparison instructions
     VMFEQ, VMFLE, VMFLT, VMFNE, VMFGT, VMFGE,
     // Integer comparison instructions
-    VMSEQ, VMSNE, VMSLTU, VMSLT, VMSLEU, VMSLE, VMSGTU, VMSBF, VMSOF, VMSIF, VIOTA, VID, VCPOP, VFIRST, VMSGT,
+    VMSEQ, VMSNE, VMSLTU, VMSLT, VMSLEU, VMSLE, VMSGTU, VMSGT,
     // Integer add-with-carry and subtract-with-borrow carry-out instructions
     VMADC, VMSBC,
+    // Mask to mask
+    VMSBF, VMSOF, VMSIF,
+    // Mask to non-mask
+    VIOTA, VID,
+    // Mask to scalar
+    VCPOP, VFIRST,
     // Mask operations
     VMANDNOT, VMAND, VMOR, VMXOR, VMORNOT, VMNAND, VMNOR, VMXNOR,
+    // Complex permutations
+    VRGATHER, VRGATHEREI16, VCOMPRESS,
     // Scalar moves from VRF
     VMVXS, VFMVFS,
     // Slide instructions
@@ -211,6 +236,24 @@ package ara_pkg;
   } resize_e;
 
   // Floating-Point structs for re-encoding during widening FP operations
+typedef struct packed {
+    logic s;
+    logic [3:0] e;
+    logic [2:0] m;
+  } fp8alt_t;
+
+  typedef struct packed {
+    logic s;
+    logic [4:0] e;
+    logic [1:0] m;
+  } fp8_t;
+
+  typedef struct packed {
+    logic s;
+    logic [7:0] e;
+    logic [6:0] m;
+  } fp16alt_t;
+
   typedef struct packed {
     logic s;
     logic [4:0] e;
@@ -228,6 +271,86 @@ package ara_pkg;
     logic [10:0] e;
     logic [51:0] m;
   } fp64_t;
+
+  function automatic int unsigned fp_mantissa_bits(rvv_pkg::vew_e fp_dtype, logic is_alt);
+    unique case ({fp_dtype, is_alt})
+      {rvv_pkg::EW8,  1'b0}: fp_mantissa_bits = 2;
+      {rvv_pkg::EW8,  1'b1}: fp_mantissa_bits = 3;
+      {rvv_pkg::EW16, 1'b0}: fp_mantissa_bits = 10;
+      {rvv_pkg::EW16, 1'b1}: fp_mantissa_bits = 7;
+      {rvv_pkg::EW32, 1'b0}: fp_mantissa_bits = 23;
+      {rvv_pkg::EW64, 1'b0}: fp_mantissa_bits = 52;
+      default: fp_mantissa_bits = -1;
+    endcase
+  endfunction
+
+  function automatic fp16_t fp16_from_fp8(fp8_t fp8, logic [$clog2(fp_mantissa_bits(rvv_pkg::EW8, 0)):0] fp8_m_lzc);
+    automatic fp8_t fp8_temp;
+    automatic fp16_t fp16;
+    // Wide sign
+    fp16.s = fp8.s;
+    // Wide exponent
+    // 15 - 7 = 8
+    unique case(fp8.e)
+      '0:      fp16.e = (fp8.m == '0) ? '0 : 5'd8 - {3'd0, fp8_m_lzc}; // Zero or Subnormal
+      '1:      fp16.e = '1; // NaN
+      default: fp16.e = 5'd8 + fp8.e; // Normal
+    endcase
+    // Wide mantissa
+    // If the input is NaN, output a quiet NaN mantissa.
+    // Otherwise, append trailing zeros to the mantissa.
+    fp8_temp.m = ((fp8.e == '0) && (fp8.m != '0)) ? (fp8.m << 1) << fp8_m_lzc : fp8.m;
+    fp16.m = ((fp8.e == '1) && (fp8.m != '0) ) ? {1'b1, 9'b0} : {fp8_temp.m, 8'b0};
+    fp16_from_fp8 = fp16;
+  endfunction
+
+  function automatic fp32_t fp32_from_fp16(fp16_t fp16, logic [$clog2(fp_mantissa_bits(rvv_pkg::EW16, 0)):0] fp16_m_lzc);
+    automatic fp16_t fp16_temp;
+    automatic fp32_t fp32;
+
+    // Wide sign
+    fp32.s = fp16.s;
+
+    // Wide exponent
+    // 127 - 15 = 112
+    unique case(fp16.e)
+      '0:      fp32.e = (fp16.m == '0) ? '0 : 8'd112 - {4'd0, fp16_m_lzc}; // Zero or Subnormal
+      '1:      fp32.e = '1; // NaN
+      default: fp32.e = 8'd112 + {3'd0, fp16.e}; // Normal
+    endcase
+
+    // Wide mantissa
+    // If the input is NaN, output a quiet NaN mantissa.
+    // Otherwise, append trailing zeros to the mantissa.
+    fp16_temp.m = ((fp16.e == '0) && (fp16.m != '0)) ? (fp16.m << 1) << fp16_m_lzc : fp16.m;
+    fp32.m = ((fp16.e == '1) && (fp16.m != '0) ) ? {1'b1, 22'b0} : {fp16_temp.m, 13'b0};
+
+    fp32_from_fp16 = fp32;
+  endfunction
+
+  function automatic fp64_t fp64_from_fp32(fp32_t fp32, logic [$clog2(fp_mantissa_bits(rvv_pkg::EW32, 0)):0] fp32_m_lzc);
+    automatic fp32_t fp32_temp;
+    automatic fp64_t fp64;
+
+    // Wide sign
+    fp64.s = fp32.s;
+
+    // Wide exponent
+    // 1023 - 127 = 896
+    unique case(fp32.e)
+      '0:      fp64.e = (fp32.m == '0) ? '0 : 11'd896 - {6'd0, fp32_m_lzc}; // Zero or Subnormal
+      '1:      fp64.e = '1; // NaN
+      default: fp64.e = 11'd896 + {3'd0, fp32.e}; // Normal
+    endcase
+
+    // Wide mantissa
+    // If the input is NaN, output a quiet NaN mantissa.
+    // Otherwise, append trailing zeros to the mantissa.
+    fp32_temp.m = ((fp32.e == '0) && (fp32.m != '0)) ? (fp32.m << 1) << fp32_m_lzc : fp32.m;
+    fp64.m = ((fp32.e == '1) && (fp32.m != '0)) ? {1'b1, 51'b0} : {fp32_temp.m, 29'b0};
+
+    fp64_from_fp32 = fp64;
+  endfunction
 
   /////////////////////////////
   //  Accelerator interface  //
@@ -889,10 +1012,28 @@ package ara_pkg;
     logic is_exception;
   } addrgen_axi_req_t;
 
+  //////////////////////////
+  // VRGATHER / VCOMPRESS //
+  //////////////////////////
 
-    ////////////////////////
-    // VFREC7 & VFRSQRT7 //
-    ///////////////////////
+  // Buffer more elements in MaskB opqueue
+  // This should be a power of 2
+  localparam VrgatherOpQueueBufDepth = 2;
+
+  // Indices are 16-bit at most because of RISC-V V VLEN limitation at 64Kibit
+  typedef logic [$clog2(rvv_pkg::RISCV_MAX_VLEN)-1:0] max_vlen_t;
+
+  // During VRGATHER/VCOMPRESS, the MASKU asks for operands to the lanes
+  typedef struct packed {
+    max_vlen_t idx;
+    rvv_pkg::vew_e eew;
+    logic [4:0] vs;
+    logic is_last_req;
+  } vrgat_req_t;
+
+  ////////////////////////
+  // VFREC7 & VFRSQRT7 //
+  ///////////////////////
 
   localparam int unsigned LUT_BITS = 7;
 

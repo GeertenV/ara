@@ -8,6 +8,7 @@ def_args_dtype-matmul?= "float64 128 128 128"
 def_args_iconv2d     ?= "112 7"
 def_args_fconv2d     ?= "112 7"
 def_args_fconv3d     ?= "112 7"
+def_args_dtype-conv3d?= "112 7 float64"
 # Vector size
 def_args_fdotproduct ?= "512"
 # Vector size
@@ -34,3 +35,5 @@ def_args_roi_align   ?= "1 32 4 4 4 2 2"
 def_args_spmv        ?= "128 128 0.6"
 # Conjugate gradient size and steps
 def_args_conjugate_gradient	?= "128 0 0.5"
+# box1d, particles_per_box, alpha, maxelm
+def_args_lavamd      ?= "2 32 0.5 128"

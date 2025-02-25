@@ -48,6 +48,7 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
     input  logic             [NrVInsn-1:0] pe_vinsn_running_i,
     output logic                           pe_req_ready_o,
     output pe_resp_t                       pe_resp_o,
+    output logic                           stu_current_burst_exception_o,
     // Interface with the address generator
     input  addrgen_axi_req_t               axi_addrgen_req_i,
     input  logic                           axi_addrgen_req_valid_i,
@@ -57,7 +58,8 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
     input  elen_t            [NrLanes-1:0] stu_operand_i,
     input  logic             [NrLanes-1:0] stu_operand_valid_i,
     output logic             [NrLanes-1:0] stu_operand_ready_o,
-    output logic                           stu_exception_flush_o,
+    // LSU exception support
+    input  logic                           lsu_ex_flush_i,
     // Interface with the Mask unit
     input  strb_t            [NrLanes-1:0] mask_i,
     input  logic             [NrLanes-1:0] mask_valid_i,
@@ -78,7 +80,7 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
   elen_t [NrLanes-1:0] stu_operand;
   logic  [NrLanes-1:0] stu_operand_valid;
   logic  [NrLanes-1:0] stu_operand_ready;
-  logic stu_operand_flush;
+  logic  lsu_ex_flush_q;
 
   for (genvar lane = 0; lane < NrLanes; lane++) begin: gen_regs
     fall_through_register #(
@@ -86,7 +88,7 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
     ) i_register (
       .clk_i     (clk_i                    ),
       .rst_ni    (rst_ni                   ),
-      .clr_i     (stu_operand_flush        ),
+      .clr_i     (lsu_ex_flush_q           ),
       .testmode_i(1'b0                     ),
       .data_i    (stu_operand_i[lane]      ),
       .valid_i   (stu_operand_valid_i[lane]),
@@ -96,6 +98,40 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
       .ready_i   (stu_operand_ready[lane]  )
     );
   end: gen_regs
+
+  ////////////////
+  //  MASK cut  //
+  ////////////////
+
+  strb_t [NrLanes-1:0] mask_q;
+  logic  [NrLanes-1:0] mask_valid_d, mask_valid_q;
+  logic                mask_ready_d;
+  logic  [NrLanes-1:0] mask_ready_q;
+  // Insn queue related signal
+  pe_req_t vinsn_issue_d, vinsn_issue_q;
+  logic  vinsn_issue_valid;
+
+  for (genvar l = 0; l < NrLanes; l++) begin
+    spill_register_flushable #(
+      .T(strb_t)
+    ) i_vstu_mask_register (
+      .clk_i     (clk_i           ),
+      .rst_ni    (rst_ni          ),
+      .flush_i   (lsu_ex_flush_q  ),
+      .data_o    (mask_q[l]       ),
+      .valid_o   (mask_valid_q[l] ),
+      .ready_i   (mask_ready_d    ),
+      .data_i    (mask_i[l]       ),
+      .valid_i   (mask_valid_d[l] ),
+      .ready_o   (mask_ready_q[l] )
+    );
+
+    // Sample only SLDU mask valid
+    assign mask_valid_d[l] = mask_valid_i[l] & ~vinsn_issue_q.vm & vinsn_issue_valid;
+  end
+
+  // Don't upset the masku with a spurious ready
+  assign mask_ready_o = mask_ready_q[0] & mask_valid_i[0] & ~vinsn_issue_q.vm & vinsn_issue_valid;
 
   ////////////////////////////////
   //  Vector instruction queue  //
@@ -137,8 +173,6 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
   assign store_pending_o   = !vinsn_queue_empty;
 
   // Do we have a vector instruction ready to be issued?
-  pe_req_t vinsn_issue_d, vinsn_issue_q;
-  logic    vinsn_issue_valid;
   assign vinsn_issue_d     = vinsn_queue_d.vinsn[vinsn_queue_d.issue_pnt];
   assign vinsn_issue_valid = (vinsn_queue_q.issue_cnt != '0);
 
@@ -203,14 +237,9 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
   logic [$clog2(8*NrLanes)-1:0] vrf_word_start_byte;
   // First payload from the lanes? If yes, it can be offset by vstart.
   logic first_lane_payload_d, first_lane_payload_q;
-  // When an exception occurs, the operand queues will be flushed after StuExLat cycles.
-  // Therefore, the input register of the store unit needs to be flushed at the same time
-  // not to sample non-flushed data.
-  // We implement this mechanism with a simple counter.
-  logic stu_op_flush_cnt_en;
-  logic [idx_width(StuExLat):0] stu_op_flush_cnt_d, stu_op_flush_cnt_q;
-  // Flush when we have reached the threshold
-  assign stu_operand_flush = StuExLat == 0 ? stu_op_flush_cnt_en : stu_op_flush_cnt_q == StuExLat;
+
+  // Signal that the current burst is having an exception
+  logic stu_current_burst_exception_d;
 
   always_comb begin: p_vstu
     // NOTE: these are out here only for debug visibility, they could go in p_vldu as automatic variables
@@ -239,19 +268,16 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
     axi_w_valid_o           = 1'b0;
     axi_b_ready_o           = 1'b0;
     stu_operand_ready       = 1'b0;
-    mask_ready_o            = 1'b0;
+    mask_ready_d            = 1'b0;
     store_complete_o        = 1'b0;
     vrf_word_start_byte     = '0;
 
     first_payload_byte_d = first_payload_byte_q;
-    stu_op_flush_cnt_d   = stu_op_flush_cnt_q;
-
-    stu_op_flush_cnt_en = 1'b0;
 
     vrf_cnt_d = vrf_cnt_q;
     first_lane_payload_d = first_lane_payload_q;
 
-    stu_exception_flush_o = 1'b0;
+    stu_current_burst_exception_d = 1'b0;
 
     // Inform the main sequencer if we are idle
     pe_req_ready_o = !vinsn_queue_full;
@@ -292,12 +318,12 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
       valid_bytes = (issue_cnt_bytes_q < (NrLanes * DataWidthB)) ? vinsn_valid_bytes : vrf_valid_bytes;
       valid_bytes = (valid_bytes       < axi_valid_bytes       ) ? valid_bytes       : axi_valid_bytes;
 
-      // TODO: apply the same vstart logic also to mask_valid_i
+      // TODO: apply the same vstart logic also to mask_valid_q
       // For now, assume (vstart % NrLanes == 0)
-      mask_valid = mask_valid_i;
+      mask_valid = mask_valid_q;
 
       // Wait for all expected operands from the lanes
-      if (&stu_operand_valid && (vinsn_issue_q.vm || (|mask_valid_i))) begin : operands_ready
+      if (&stu_operand_valid && (vinsn_issue_q.vm || (|mask_valid_q))) begin : operands_ready
         vrf_pnt_d = vrf_pnt_q + valid_bytes;
         vrf_cnt_d = vrf_cnt_q + valid_bytes;
 
@@ -321,7 +347,7 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
 
               // Copy data
               axi_w_o.data[8*axi_byte +: 8] = stu_operand[vrf_lane][8*vrf_offset +: 8];
-              axi_w_o.strb[axi_byte]        = vinsn_issue_q.vm || mask_i[vrf_lane][vrf_offset];
+              axi_w_o.strb[axi_byte]        = vinsn_issue_q.vm || mask_q[vrf_lane][vrf_offset];
             end
           end
         end : stu_operand_to_axi_w
@@ -349,7 +375,7 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
           // Acknowledge the operands with the lanes
           stu_operand_ready = '1;
           // Acknowledge the mask operand
-          mask_ready_o      = !vinsn_issue_q.vm;
+          mask_ready_d      = !vinsn_issue_q.vm;
           // Account for the results that were issued
           if (first_lane_payload_q) begin
             vrf_eff_write_bytes = first_payload_byte_q;
@@ -425,7 +451,8 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
     ////////////////////////
 
     // Clear instruction from queue and data in case of exceptions from addrgen
-    if (vinsn_issue_valid && ((axi_addrgen_req_valid_i && axi_addrgen_req_i.is_exception) || addrgen_illegal_store_i)) begin : exception
+    // Wait until we have only one instruction to commit, i.e., the previous memory operations are over and have been successful (with an ack on the b channel)
+    if (vinsn_issue_valid && (vinsn_queue_q.commit_cnt == 1) && ((axi_addrgen_req_valid_i && axi_addrgen_req_i.is_exception) || addrgen_illegal_store_i)) begin : exception
       // Bump issue counters and pointers of the vector instruction queue
       vinsn_queue_d.issue_cnt -= 1;
       issue_cnt_bytes_d = '0;
@@ -436,41 +463,29 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
         vinsn_queue_d.issue_pnt += 1;
       end : issue_pnt_increment
 
-      // Clean the input data, the opreq, and the opqueues after StuExLat cycles
-      stu_exception_flush_o = 1'b1;
-      stu_op_flush_cnt_en   = 1'b1;
-
       // Ack the addrgen for this last faulty request
       axi_addrgen_req_ready_o = axi_addrgen_req_valid_i;
       // Reset AXI pointers
       axi_len_d = '0;
 
+      // Abort the main sequencer -> operand-req request
+      stu_current_burst_exception_d = 1'b1;
+
       // Mark the vector instruction as being done
-      // if (vinsn_queue_d.issue_pnt != vinsn_queue_d.commit_pnt) begin : instr_done
-        // Signal done to sequencer
-        store_complete_o = 1'b1;
+      // Signal done to sequencer
+      store_complete_o = 1'b1;
 
-        pe_resp_d.vinsn_done[vinsn_commit.id] = 1'b1;
+      pe_resp_d.vinsn_done[vinsn_commit.id] = 1'b1;
 
-        // Update the commit counters and pointers
-        vinsn_queue_d.commit_cnt -= 1;
-        if (vinsn_queue_d.commit_pnt == VInsnQueueDepth-1) begin : commit_pnt_overflow
-          vinsn_queue_d.commit_pnt = '0;
-        end : commit_pnt_overflow
-        else begin : commit_pnt_increment
-          vinsn_queue_d.commit_pnt += 1;
-        end : commit_pnt_increment
-      // end : instr_done
+      // Update the commit counters and pointers
+      vinsn_queue_d.commit_cnt -= 1;
+      if (vinsn_queue_d.commit_pnt == VInsnQueueDepth-1) begin : commit_pnt_overflow
+        vinsn_queue_d.commit_pnt = '0;
+      end : commit_pnt_overflow
+      else begin : commit_pnt_increment
+        vinsn_queue_d.commit_pnt += 1;
+      end : commit_pnt_increment
     end : exception
-
-    // Increase the flush counter until the threshold if we enabled it.
-    if (stu_op_flush_cnt_en || stu_op_flush_cnt_q != '0) begin
-      stu_op_flush_cnt_d = stu_op_flush_cnt_q + 1;
-    end
-    // Reset the counter if we are flushing the input operands.
-    if (stu_operand_flush) begin
-      stu_op_flush_cnt_d = '0;
-    end
 
     //////////////////////////////
     //  Accept new instruction  //
@@ -516,9 +531,12 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
 
       first_payload_byte_q <= '0;
       first_lane_payload_q <= '0;
-      stu_op_flush_cnt_q   <= '0;
 
       vrf_cnt_q <= '0;
+
+      lsu_ex_flush_q <= 1'b0;
+
+      stu_current_burst_exception_o <= 1'b0;
     end else begin
       vinsn_running_q   <= vinsn_running_d;
       issue_cnt_bytes_q <= issue_cnt_bytes_d;
@@ -530,9 +548,12 @@ module vstu import ara_pkg::*; import rvv_pkg::*; #(
 
       first_payload_byte_q <= first_payload_byte_d;
       first_lane_payload_q <= first_lane_payload_d;
-      stu_op_flush_cnt_q   <= stu_op_flush_cnt_d;
 
       vrf_cnt_q <= vrf_cnt_d;
+
+      lsu_ex_flush_q <= lsu_ex_flush_i;
+
+      stu_current_burst_exception_o <= stu_current_burst_exception_d;
     end
   end
 

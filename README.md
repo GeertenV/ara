@@ -39,6 +39,8 @@ make toolchain-llvm
 ```
 
 Ara also requires an updated Spike ISA simulator, with support for the vector extension.
+There are linking issues with the standard libraries when using newer CC/CXX versions to compile Spike. Therefore, here we resort to older versions of the compilers. If there are problems with dynamic linking, use:
+`make riscv-isa-sim LDFLAGS="-static-libstdc++"`. Spike was compiled successfully using gcc and g++ version 7.2.0.
 
 To build Spike, run the following command in the project's root directory.
 
@@ -210,6 +212,12 @@ Currently, the following kernels support automatic VCD dumping: `fmatmul`, `fcon
 ### Linting Flow
 
 We also provide Synopsys Spyglass linting scripts in the hardware/spyglass. Run make lint in the hardware folder, with a specific MemPool configuration, to run the tests associated with the lint_rtl target.
+
+## FPGA implementation and Linux flow
+
+Ara supports Cheshire's FPGA flow and can be currently implemented on VCU128 and VCU118 in bare-metal and with Linux. The tested configuration is with 2 lanes.
+
+For information about the FPGA bare-metal and Linux flows, please refer to `cheshire/README.md`.
 
 ## Publications
 
