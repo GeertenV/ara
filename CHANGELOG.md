@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
  - Fix wrong `eew` for mask comparisons in lane sequencer
  - Fix bug in ordered reductions
  - Avoid spurious valids to the simd multipliers
+ - Fix ideal dispatcher (update the ara-cva6 interface)
+ - Bump AXI (v0.39.4 is broken)
+ - Remove timing loop in addrgen (triggered by CVA6 pulp-v2)
+ - Fix latch in vmfpu
+ - Remove spurious .c files from cheshire's test folder after compilation
+ - RVV CSR instructions are "config" instructions in ara dispatcher
 
 ### Added
 
@@ -64,6 +70,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
  - Add cva6-sdk submodule
  - Add Cheshire Linux FPGA flow for vcu128 and vcu118
  - Add RVV tests to be used with Cheshire's stub and specific debug environment.
+ - Add ara-cheshire bender flow for vcs
 
 ### Changed
 
@@ -102,6 +109,14 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
  - Update READMEs with FPGA implementation instructions
  - Optimize `addrgen` timing for OS-on operation
  - Enable OS by default
+ - Bump CVA6 to pulp-v2
+ - Re-parametrize the design with pulp-v2 parameters
+ - Bump AXI version from 0.39.4 (broken) to 0.39.5
+ - Bump default simulator to QuestaSim 2021.3
+ - Bump CVA6 to pulp-v2 and update parametrization
+ - Bump QuestaSim version
+ - Bump LLVM to version 20.1.0
+ - Update RVV intrinsics
 
 ## 3.0.0 - 2023-09-08
 
